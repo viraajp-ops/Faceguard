@@ -8,12 +8,14 @@ import { RootStackParamList } from '../navigation/RootNavigator';
 type Props = NativeStackScreenProps<RootStackParamList, 'Auth'>;
 
 export function AuthScreen({ navigation }: Props) {
-  const { authenticate, enroll, enrolled, ready, initError, status, lastError, lastResult } = useFaceAuth();
+  const { authenticate, enroll, enrolled, ready, status, lastError, lastResult } = useFaceAuth();
   const cameraRef = useRef<Camera>(null);
+  const requestedPermissionRef = useRef(false);
   const device = useCameraDevice('front');
   const { hasPermission, requestPermission } = useCameraPermission();
   const [challengeText, setChallengeText] = useState('Enroll your face to start offline authentication');
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [cameraError, setCameraError] = useState<string | undefined>();
+  const [requestingPermission, setRequestingPermission] = useState(false);
 
   useEffect(() => {
     if (lastResult) {
@@ -23,66 +25,74 @@ export function AuthScreen({ navigation }: Props) {
     return undefined;
   }, [lastResult, navigation]);
 
-  const busy = status === 'detecting-face' || status === 'checking-liveness' || status === 'matching-face';
-  const cameraReady = Boolean(device && hasPermission);
-  const canCapture = cameraReady && ready && !busy;
+  useEffect(() => {
+    if (hasPermission || requestedPermissionRef.current) {
+      return;
+    }
 
-  const capturePhoto = async (): Promise<string> => {
+    requestedPermissionRef.current = true;
+    let mounted = true;
+
+    async function requestCameraAccess() {
+      setRequestingPermission(true);
+      try {
+        await requestPermission();
+      } finally {
+        if (mounted) {
+          setRequestingPermission(false);
+        }
+      }
+    }
+
+    void requestCameraAccess();
+
+    return () => {
+      mounted = false;
+    };
+  }, [hasPermission, requestPermission]);
+
+  const busy = status === 'detecting-face' || status === 'checking-liveness' || status === 'matching-face';
+  const cameraReady = Boolean(device && hasPermission && !cameraError);
+
+  const capturePhoto = async () => {
     if (!cameraRef.current) {
-      throw new Error('Camera is not ready. Wait a moment and try again.');
+      throw new Error('Camera is not ready.');
     }
     const photo = await cameraRef.current.takePhoto({
       flash: 'off',
       enableShutterSound: false
     });
-    if (!photo?.path) {
-      throw new Error('Camera did not return a photo. Try again.');
-    }
     return photo.path;
   };
 
   const enrollCurrentFace = async () => {
-    setActionError(null);
-    try {
-      setChallengeText('Look straight at the camera');
-      const photoPath = await capturePhoto();
-      const ok = await enroll(photoPath);
-      setChallengeText(ok ? 'Enrollment saved on this device' : 'Enrollment failed. Try again.');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Enrollment failed unexpectedly.';
-      setActionError(message);
-      setChallengeText('Enrollment failed. Try again.');
+    const prompts = ['Look straight at the camera', 'Keep your face centered', 'Hold still for a moment'];
+    const captures: string[] = [];
+
+    for (const prompt of prompts) {
+      setChallengeText(prompt);
+      await wait(650);
+      captures.push(await capturePhoto());
     }
+
+    setChallengeText('Saving offline template');
+    const ok = await enroll(captures);
+    setChallengeText(ok ? 'Enrollment saved on this device' : 'Enrollment failed. Try again.');
   };
 
   const verifyCurrentFace = async () => {
-    setActionError(null);
     const prompts = ['Blink once', 'Turn your head slightly', 'Smile naturally'];
     const captures: string[] = [];
 
-    try {
-      for (const prompt of prompts) {
-        setChallengeText(prompt);
-        await wait(850);
-        captures.push(await capturePhoto());
-      }
-
-      setChallengeText('Matching offline biometric template');
-      await authenticate(captures);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Verification failed unexpectedly.';
-      setActionError(message);
-      setChallengeText('Verification failed. Try again.');
+    for (const prompt of prompts) {
+      setChallengeText(prompt);
+      await wait(750);
+      captures.push(await capturePhoto());
     }
-  };
 
-  const statusMessage = initError
-    ? initError
-    : cameraReady
-      ? ready
-        ? challengeText
-        : 'Preparing offline models'
-      : 'Camera not ready';
+    setChallengeText('Matching offline biometric template');
+    await authenticate(captures);
+  };
 
   return (
     <View style={styles.container}>
@@ -92,30 +102,52 @@ export function AuthScreen({ navigation }: Props) {
             ref={cameraRef}
             style={StyleSheet.absoluteFill}
             device={device}
-            isActive={canCapture || !enrolled}
+            isActive
             photo
             video={false}
             audio={false}
+            onInitialized={() => setCameraError(undefined)}
+            onError={error => setCameraError(error.message)}
           />
         ) : (
           <View style={styles.cameraFallback}>
             <Text style={styles.cameraFallbackTitle}>
-              {hasPermission ? 'Front camera unavailable' : 'Camera permission needed'}
+              {cameraError
+                ? 'Camera failed to start'
+                : hasPermission
+                  ? 'Front camera unavailable'
+                  : 'Camera permission needed'}
             </Text>
             <Text style={styles.cameraFallbackText}>
-              {hasPermission
-                ? 'Use a device or emulator with a front camera enabled.'
-                : 'Allow camera access to run offline face verification.'}
+              {cameraError
+                ? cameraError
+                : hasPermission
+                  ? 'Use a device or emulator with a front camera enabled.'
+                  : 'Allow camera access to run offline face verification.'}
             </Text>
-            {!hasPermission ? (
-              <Pressable style={styles.permissionButton} onPress={requestPermission}>
+            {!hasPermission || cameraError ? (
+              <Pressable
+                style={styles.permissionButton}
+                onPress={async () => {
+                  requestedPermissionRef.current = true;
+                  setCameraError(undefined);
+                  setRequestingPermission(true);
+                  try {
+                    await requestPermission();
+                  } finally {
+                    setRequestingPermission(false);
+                  }
+                }}
+              >
                 <Text style={styles.permissionButtonText}>Allow Camera</Text>
               </Pressable>
             ) : null}
           </View>
         )}
         <View style={styles.faceOval} />
-        <Text style={styles.cameraText}>{statusMessage}</Text>
+        <Text style={styles.cameraText}>
+          {cameraReady ? (ready ? challengeText : 'Preparing offline models') : 'Camera not ready'}
+        </Text>
       </View>
 
       <View style={styles.statusPanel}>
@@ -127,12 +159,11 @@ export function AuthScreen({ navigation }: Props) {
         </Text>
 
         <View style={styles.metricsRow}>
-          <Metric label="Model" value="TFLite" />
+          <Metric label="Model" value="14.5 MB" />
           <Metric label="Target" value="< 1 sec" />
           <Metric label="Mode" value="Offline" />
         </View>
 
-        {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
         {lastError ? <Text style={styles.error}>{lastError.reason}</Text> : null}
         {lastResult ? (
           <Text style={styles.success}>
@@ -142,15 +173,15 @@ export function AuthScreen({ navigation }: Props) {
 
         <Pressable
           accessibilityRole="button"
-          disabled={!canCapture}
+          disabled={!ready || busy || !cameraReady || requestingPermission}
           style={({ pressed }) => [
             styles.button,
-            !canCapture && styles.buttonDisabled,
-            pressed && canCapture && styles.buttonPressed
+            (!ready || busy || !cameraReady || requestingPermission) && styles.buttonDisabled,
+            pressed && styles.buttonPressed
           ]}
           onPress={enrolled ? verifyCurrentFace : enrollCurrentFace}
         >
-          {busy || !ready ? (
+          {busy || !ready || requestingPermission ? (
             <ActivityIndicator color="#ffffff" />
           ) : (
             <Text style={styles.buttonText}>{enrolled ? 'Verify Face' : 'Enroll Face'}</Text>

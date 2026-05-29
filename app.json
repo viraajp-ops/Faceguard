@@ -28,8 +28,7 @@
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_NETWORK_STATE",
-        "android.permission.INTERNET",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.INTERNET"
       ]
     },
     "plugins": [
@@ -37,8 +36,8 @@
         "react-native-vision-camera",
         {
           "cameraPermissionText": "Allow $(PRODUCT_NAME) to access your camera",
-          "enableMicrophonePermission": true,
-          "microphonePermissionText": "Allow $(PRODUCT_NAME) to access your microphone"
+          "enableMicrophonePermission": false,
+          "enableFrameProcessors": false
         }
       ],
       [

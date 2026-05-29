@@ -1,5 +1,4 @@
 import { Platform } from 'react-native';
-import { loadTensorflowModel, TensorflowModel } from 'react-native-fast-tflite';
 import { FaceDetection, FrameSample } from '../../types/faceguard';
 import { decodeBestBlazeFace } from './blazeFaceDecode';
 import {
@@ -26,8 +25,8 @@ type PreparedPhoto = {
  * Falls back to PhotoBasedModelAdapter when native models are unavailable.
  */
 export class TfliteModelAdapter implements ModelAdapter {
-  private blazeFace?: TensorflowModel;
-  private mobileFaceNet?: TensorflowModel;
+  private blazeFace?: any;
+  private mobileFaceNet?: any;
   private readonly fallback = new PhotoBasedModelAdapter();
   private readonly photoCache = new Map<string, PreparedPhoto>();
   private useNativeModels = false;
@@ -35,13 +34,21 @@ export class TfliteModelAdapter implements ModelAdapter {
 
   async initialize(): Promise<void> {
     try {
-      this.blazeFace = await this.loadBlazeFaceModel();
+      // Load lazily so Nitro failures fall back cleanly instead of crashing on import.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const fastTflite = require('react-native-fast-tflite');
+      const { loadTensorflowModel } = fastTflite as {
+        loadTensorflowModel: (source: unknown, delegates: unknown) => Promise<any>;
+      };
+      this.blazeFace = await this.loadBlazeFaceModel(loadTensorflowModel);
       this.mobileFaceNet = await loadTensorflowModel(MOBILE_FACENET_MODEL, 'default');
       this.useNativeModels = true;
     } catch (error) {
       console.warn('TFLite models unavailable, using photo-based fallback.', error);
       await this.fallback.initialize();
       this.useNativeModels = false;
+      this.blazeFace = undefined;
+      this.mobileFaceNet = undefined;
     }
     this.initialized = true;
   }
@@ -105,10 +112,10 @@ export class TfliteModelAdapter implements ModelAdapter {
 
     const crop = mapNormalizedBoxToSource(prepared.detection, prepared.letterbox);
     const input = cropAndNormalizeMobileFaceNet(prepared.rgba, crop);
-    const outputs = await this.mobileFaceNet.run([input]);
+    const outputs = await this.mobileFaceNet.run([input as any]);
     const embeddings = outputs[0];
 
-    if (!embeddings || embeddings.length < 192) {
+    if (!embeddings || embeddings.byteLength < 192 * 4) {
       throw new Error('MobileFaceNet returned an invalid embedding tensor.');
     }
 
@@ -127,7 +134,7 @@ export class TfliteModelAdapter implements ModelAdapter {
     let detection: ReturnType<typeof decodeBestBlazeFace>;
 
     if (this.blazeFace) {
-      const outputs = await this.blazeFace.run([letterbox.tensor]);
+      const outputs = await this.blazeFace.run([letterbox.tensor as any]);
       const rawBoxes = outputs[0];
       const rawScores = outputs[1];
       detection =
@@ -141,7 +148,9 @@ export class TfliteModelAdapter implements ModelAdapter {
     return prepared;
   }
 
-  private async loadBlazeFaceModel(): Promise<TensorflowModel> {
+  private async loadBlazeFaceModel(
+    loadTensorflowModel: (source: unknown, delegates: unknown) => Promise<any>
+  ): Promise<any> {
     if (Platform.OS === 'ios') {
       try {
         return await loadTensorflowModel(BLAZE_FACE_MODEL, 'core-ml');
@@ -159,10 +168,11 @@ export class TfliteModelAdapter implements ModelAdapter {
   }
 }
 
-function typedArrayToNumbers(values: { length: number; [index: number]: number | bigint }): number[] {
-  const result = new Array(values.length);
-  for (let index = 0; index < values.length; index += 1) {
-    result[index] = Number(values[index]);
+function typedArrayToNumbers(values: ArrayBuffer | ArrayLike<number>): number[] {
+  if (values instanceof ArrayBuffer) {
+    const floats = new Float32Array(values);
+    return Array.from(floats, value => Number(value));
   }
-  return result;
+
+  return Array.from(values, value => Number(value));
 }

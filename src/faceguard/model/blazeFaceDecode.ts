@@ -25,12 +25,16 @@ const ANCHORS = generateAnchors(SSD_OPTIONS_SHORT);
 
 type NumericArray = { length: number; [index: number]: number | bigint };
 
-export function decodeBestBlazeFace(rawBoxes: NumericArray, rawScores: NumericArray): BlazeFaceBox | undefined {
-  const boxes = decodeBoxes(rawBoxes);
+export function decodeBestBlazeFace(
+  rawBoxes: NumericArray | ArrayBuffer,
+  rawScores: NumericArray | ArrayBuffer
+): BlazeFaceBox | undefined {
+  const boxes = decodeBoxes(asNumericArray(rawBoxes));
   let best: BlazeFaceBox | undefined;
 
-  for (let index = 0; index < rawScores.length; index += 1) {
-    const score = sigmoid(clamp(toFloat(rawScores[index]), -RAW_SCORE_LIMIT, RAW_SCORE_LIMIT));
+  const scoreArray = asNumericArray(rawScores);
+  for (let index = 0; index < scoreArray.length; index += 1) {
+    const score = sigmoid(clamp(toFloat(scoreArray[index]), -RAW_SCORE_LIMIT, RAW_SCORE_LIMIT));
     if (score < MIN_SCORE) {
       continue;
     }
@@ -139,4 +143,13 @@ function clamp(value: number, min: number, max: number): number {
 
 function toFloat(value: number | bigint): number {
   return Number(value);
+}
+
+function asNumericArray(values: NumericArray | ArrayBuffer): NumericArray {
+  if (values instanceof ArrayBuffer) {
+    const floats = new Float32Array(values);
+    return floats as unknown as NumericArray;
+  }
+
+  return values;
 }

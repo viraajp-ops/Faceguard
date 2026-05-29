@@ -1,11 +1,13 @@
 import * as SecureStore from 'expo-secure-store';
+import { PhotoDescriptor } from './PhotoDescriptor';
 
-const ENROLLMENT_KEY = 'faceguard-local-enrollment-v2';
+const ENROLLMENT_KEY = 'faceguard-local-enrollment-v1';
 
 export type LocalEnrollment = {
   userId: string;
   name: string;
-  embedding: number[];
+  embedding?: number[];
+  descriptor?: PhotoDescriptor;
   enrolledAt: string;
 };
 
@@ -15,17 +17,7 @@ export async function getLocalEnrollment(): Promise<LocalEnrollment | undefined>
     return undefined;
   }
 
-  const parsed = JSON.parse(value) as LocalEnrollment & { descriptor?: { vector: number[] } };
-  if (parsed.embedding?.length) {
-    return parsed;
-  }
-
-  // Migrate legacy photo-descriptor enrollments by clearing stale data.
-  if (parsed.descriptor) {
-    await SecureStore.deleteItemAsync(ENROLLMENT_KEY);
-  }
-
-  return undefined;
+  return JSON.parse(value) as LocalEnrollment;
 }
 
 export async function saveLocalEnrollment(enrollment: LocalEnrollment): Promise<void> {

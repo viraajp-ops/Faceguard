@@ -1,4 +1,13 @@
-import React, { createContext, PropsWithChildren, useContext, useEffect, useMemo, useState } from 'react';
+import React, {
+  createContext,
+  PropsWithChildren,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react';
 import { FaceGuardEngine } from './FaceGuardEngine';
 import { OfflineQueue } from './storage/OfflineQueue';
 import { SyncService } from './sync/SyncService';
@@ -9,6 +18,7 @@ type FaceGuardContextValue = {
   engine: FaceGuardEngine;
   ready: boolean;
   initError: string | null;
+  ensureEngineReady: () => Promise<void>;
 };
 
 const FaceGuardContext = createContext<FaceGuardContextValue | undefined>(undefined);
@@ -17,6 +27,8 @@ export function FaceGuardProvider({ children }: PropsWithChildren) {
   const queue = useMemo(() => new OfflineQueue(), []);
   const syncService = useMemo(() => new SyncService(queue), [queue]);
   const engine = useMemo(() => new FaceGuardEngine(), []);
+  const engineReadyRef = useRef(false);
+  const engineInitRef = useRef<Promise<void> | null>(null);
   const [ready, setReady] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
 
@@ -26,16 +38,14 @@ export function FaceGuardProvider({ children }: PropsWithChildren) {
     async function init() {
       try {
         await queue.initialize();
-        await engine.initialize();
-
         if (mounted) {
           setInitError(null);
           setReady(true);
         }
       } catch (error) {
         const message =
-          error instanceof Error ? error.message : 'FaceGuard failed to initialize offline services.';
-        console.error('INIT ERROR:', error);
+          error instanceof Error ? error.message : 'Offline storage failed to initialize.';
+        console.error('QUEUE INIT ERROR:', error);
         if (mounted) {
           setInitError(message);
           setReady(false);
@@ -48,10 +58,26 @@ export function FaceGuardProvider({ children }: PropsWithChildren) {
     return () => {
       mounted = false;
     };
-  }, [engine, queue]);
+  }, [queue]);
+
+  const ensureEngineReady = useCallback(async () => {
+    if (engineReadyRef.current) {
+      return;
+    }
+
+    if (!engineInitRef.current) {
+      engineInitRef.current = engine.initialize().then(() => {
+        engineReadyRef.current = true;
+      });
+    }
+
+    await engineInitRef.current;
+  }, [engine]);
 
   return (
-    <FaceGuardContext.Provider value={{ queue, syncService, engine, ready, initError }}>
+    <FaceGuardContext.Provider
+      value={{ queue, syncService, engine, ready, initError, ensureEngineReady }}
+    >
       {children}
     </FaceGuardContext.Provider>
   );

@@ -1,36 +1,67 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { FACEGUARD_CONFIG } from '../faceguard/config';
 import {
   authenticateLocalFace,
   enrollLocalFace,
   hasLocalEnrollment
 } from '../faceguard/biometrics/OfflineBiometricAuthenticator';
-import { useFaceGuardContext } from '../faceguard/FaceGuardProvider';
+import { MlFaceAuthService } from '../faceguard/model/MlFaceAuthService';
 import { AuthStatus, FaceAuthFailure, FaceAuthResult } from '../types/faceguard';
+import { useFaceGuardContext } from '../faceguard/FaceGuardProvider';
 
 export function useFaceAuth() {
-  const { queue, ready, initError } = useFaceGuardContext();
-  const [status, setStatus] = useState<AuthStatus>('idle');
+  const { queue, ready } = useFaceGuardContext();
+  const [status, setStatus] = useState<AuthStatus>('initializing');
   const [lastResult, setLastResult] = useState<FaceAuthResult | undefined>();
   const [lastError, setLastError] = useState<FaceAuthFailure | undefined>();
   const [enrolled, setEnrolled] = useState(false);
+  const [mlReady, setMlReady] = useState(false);
 
-  const refreshEnrollment = useCallback(async () => {
-    setEnrolled(await hasLocalEnrollment());
-  }, []);
+  const ml = useMemo(
+    () =>
+      new MlFaceAuthService({
+        faceDetector: require('../../models/blazeface-int8.tflite'),
+        faceRecognizer: require('../../models/mobilefacenet-fp16.tflite'),
+        antiSpoof: require('../../models/antispoof-texture-int8.tflite')
+      }),
+    []
+  );
 
   useEffect(() => {
-    if (ready) {
-      refreshEnrollment();
+    let mounted = true;
+    async function init() {
+      try {
+        await ml.initialize();
+        if (mounted) {
+          setMlReady(true);
+          setStatus('idle');
+        }
+      } catch (error) {
+        console.warn('ML models unavailable, keeping offline fallback active.', error);
+        if (mounted) {
+          setMlReady(false);
+          setStatus('idle');
+        }
+      }
     }
-  }, [ready, refreshEnrollment]);
+    void init();
+    return () => {
+      mounted = false;
+    };
+  }, [ml]);
+
+  const refreshEnrollment = useCallback(async () => {
+    setEnrolled(mlReady ? true : await hasLocalEnrollment());
+  }, [mlReady]);
+
+  useEffect(() => {
+    refreshEnrollment();
+  }, [refreshEnrollment]);
 
   const enroll = useCallback(
-    async (photoPath: string) => {
+    async (photoPaths: string[] | string) => {
       if (!ready) {
         setStatus('initializing');
-        if (initError) {
-          setLastError({ code: 'MODEL_UNAVAILABLE', reason: initError });
-        }
         return false;
       }
 
@@ -38,7 +69,11 @@ export function useFaceAuth() {
       setLastError(undefined);
 
       try {
-        await enrollLocalFace(photoPath);
+        if (mlReady) {
+          await ml.enroll(photoPaths);
+        } else {
+          await enrollLocalFace(photoPaths);
+        }
         await refreshEnrollment();
         setStatus('success');
         return true;
@@ -48,16 +83,13 @@ export function useFaceAuth() {
         return false;
       }
     },
-    [initError, ready, refreshEnrollment]
+    [ml, ready, refreshEnrollment]
   );
 
   const authenticate = useCallback(
     async (photoPaths: string[]) => {
       if (!ready) {
         setStatus('initializing');
-        if (initError) {
-          setLastError({ code: 'MODEL_UNAVAILABLE', reason: initError });
-        }
         return;
       }
 
@@ -65,7 +97,9 @@ export function useFaceAuth() {
       setLastError(undefined);
 
       try {
-        const result = await authenticateLocalFace(photoPaths, 'offline-camera-device');
+        const result = mlReady
+          ? await ml.authenticate(photoPaths, 'offline-camera-device')
+          : await authenticateLocalFace(photoPaths, 'offline-camera-device');
         await queue.enqueue(result);
         setLastResult(result);
         setStatus('success');
@@ -77,13 +111,12 @@ export function useFaceAuth() {
         return undefined;
       }
     },
-    [initError, queue, ready]
+    [ml, queue, ready]
   );
 
   return {
     status,
-    ready,
-    initError,
+    ready: ready && (mlReady || FACEGUARD_CONFIG.modelVersion.length > 0),
     enrolled,
     lastResult,
     lastError,

@@ -1,8 +1,10 @@
+import { Platform } from 'react-native';
 import { v4 as uuid } from 'uuid';
 import { getLocalEnrollment, saveLocalEnrollment } from './biometrics/LocalEnrollmentStore';
 import { FACEGUARD_CONFIG } from './config';
 import { LivenessEngine } from './liveness/LivenessEngine';
 import { ModelAdapter, SimulatedTfliteAdapter } from './model/ModelAdapter';
+import { PhotoBasedModelAdapter } from './model/PhotoBasedModelAdapter';
 import { TfliteModelAdapter } from './model/TfliteModelAdapter';
 import { cosineSimilarity } from './model/vector';
 import { SAMPLE_IDENTITIES } from './sampleIdentities';
@@ -26,6 +28,11 @@ export type AuthenticateOptions = {
 const LOCAL_MATCH_THRESHOLD = 0.82;
 
 export function createDefaultModelAdapter(): ModelAdapter {
+  // Native TFLite crashes on many Android devices during model.run(); use the
+  // photo pipeline there. iOS uses BlazeFace + MobileFaceNet when available.
+  if (Platform.OS === 'android') {
+    return new PhotoBasedModelAdapter();
+  }
   return new TfliteModelAdapter();
 }
 
@@ -136,7 +143,12 @@ export class FaceGuardEngine {
       return { matched: false, score: 0, threshold };
     }
 
-    const score = Number(cosineSimilarity(embedding, enrollment.embedding).toFixed(4));
+    const enrollmentVector = enrollment.embedding ?? enrollment.descriptor?.vector;
+    if (!enrollmentVector) {
+      return { matched: false, score: 0, threshold };
+    }
+
+    const score = Number(cosineSimilarity(embedding, enrollmentVector).toFixed(4));
     const effectiveThreshold = Math.max(threshold, LOCAL_MATCH_THRESHOLD);
     return {
       matched: score >= effectiveThreshold,
